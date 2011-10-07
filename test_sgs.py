@@ -33,7 +33,7 @@ def rmtree(path):
     if os_path.exists(path):
         shutil.rmtree(path, onerror=retry_rm_readonly)
         
-def run_and_serve_command(server, command):
+def run_and_serve_command(server, command, expected_result = 0):
     out_buffer = StringIO()
     child = subprocess.Popen(command,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -41,7 +41,7 @@ def run_and_serve_command(server, command):
     if server: server.handle_request()
     res = child.wait()
     pump.join()
-    if res:
+    if res != expected_result:
         print 'Git returned %d: %r' % (res, out_buffer.getvalue())
         assert False
     lst = out_buffer.getvalue().split('\n')
@@ -91,7 +91,7 @@ class Test_successful_operations(TestBase, unittest.TestCase):
         self.assertListEndsWith(output, get_repo_creation_message('test_repo')) 
 
     def test_with_extension2(self):
-        self.server.reconfigure(self.server.users, {'test_repo.git1' : ['test_user']})
+        self.server.configure(self.server.users, {'test_repo.git1' : ['test_user']})
         output = run_and_serve_command(self.server, 
                 'git clone ssh://localhost:27015/test_repo.git1')
         self.assertListEndsWith(output, get_repo_creation_message('test_repo.git1')) 
@@ -143,7 +143,23 @@ class Test_successful_operations(TestBase, unittest.TestCase):
         with open('clone1/' + file_name, 'r') as f:
             self.assertEqual(f.read(), contents)
             
-        
+class Test_error_recovery(TestBase, unittest.TestCase):
+    nonexistent_pub_key = 'AAAAB3NzaC1yc2EAAAADAQABAAAAgQC2GVRnNff5RjWqeR8F8ZqZkslZZZZZZZZZZZZTB2zTs088JK/xZxz6u2CztMRDN7FK2Y0jVVktMWTlIB6PhMCs+IYVjo1vdEKuSfifVaInA+lPUwHOju+P76bf9NxFKYGWDxjx8Nuad4kKXz8lYJmC2BpocUftmvBHMfKY7kf/IQ=='        
+    
+    def test_wrong_config(self):
+        with self.assertRaises(AssertionError) as assertion:
+            self.server.configure(users, { 'test_repo' : ['not_a_user'] })
+        self.assertEqual(assertion.exception.message, "Unknown user 'not_a_user' in repository 'test_repo'")
+    def test_nonexistent_repo(self):
+        output = run_and_serve_command(self.server, 
+                'git clone ssh://localhost:27015/nonexistent_repo', 128)
+        self.assertIn("fatal: Repository doesn't exist: 'nonexistent_repo'", output) 
+    def test_nonexistent_user(self):
+        self.server.configure({'test_user' : self.nonexistent_pub_key },
+                self.server.repositories)
+        output = run_and_serve_command(self.server, 
+                'git clone ssh://localhost:27015/test_repo', 128)
+        self.assertIn('Permission denied (publickey).', map(str.strip, output)) 
         
 
 if __name__ == '__main__':

@@ -12,6 +12,7 @@ from binascii import hexlify
 from contextlib import contextmanager
 import traceback
 import logging.handlers
+from Queue import Queue, Empty as Queue_Empty
 
 _log_hex_dump = False
 log = logging.getLogger('sgs')
@@ -163,11 +164,11 @@ def parse_public_key(s):
 class TransportServer(paramiko.ServerInterface):
     '''Allows a single `exec` ssh call, saves authorized
     user name, channel, and command'''
-    def __init__(self, key_to_user):
+    def __init__(self, key_to_user, request_queue):
         self.username = None
         self.command = None
-        self.event = threading.Event()
         self.key_to_user = key_to_user
+        self.request_queue = request_queue
 
     def check_channel_request(self, kind, chanid):
         if kind == 'session':
@@ -188,54 +189,65 @@ class TransportServer(paramiko.ServerInterface):
 
     def check_channel_exec_request(self, channel, command):
         log.info('exec request on channel_%d: %r' % (channel.chanid, command))
-        if not self.username:
-            log.error('check_channel_exec_request: unauthorized!')
-            return False
-        if self.command:
-            log.error('check_channel_exec_request: duplicate exec request!')
-            return False
-        self.command = command
-        self.channel = channel
-        self.event.set()
-        log.debug('TransportServer.event set!')
+        self.request_queue.put((channel, self.username, command))
         return True
+
+class CustomTransport(paramiko.Transport):
+    def __init__(self, sock, request_queue):
+        paramiko.Transport.__init__(self, sock)
+        self.request_queue = request_queue
+    def run(self):
+        log.info('transport thread starting')
+        try:
+            paramiko.Transport.run(self)
+        finally:
+            self.request_queue.put((None, None, None))
+            log.info('transport thread terminating')
+    
 
 
 class RequestHandler(SocketServer.BaseRequestHandler):
     def handle(self):
         log.info('Request from %s:%d' % self.client_address)
-        self.transport = transport = paramiko.Transport(self.request)
+        request_queue = Queue() 
+        self.transport = transport = CustomTransport(self.request, request_queue)
         try:
-            transport.set_log_channel('sgs.paramiko.transport')
+            transport.set_log_channel('sgs.transport')
             transport.add_server_key(self.server.server_key)
             if _log_hex_dump: transport.set_hexdump(True)
-            transport_server = TransportServer(self.server.key_to_user)
+            transport_server = TransportServer(self.server.key_to_user, request_queue)
             transport.start_server(server=transport_server)
-            wait_for_exec_interval = 30.0 
-            log.debug('waiting %f seconds for exec request' % wait_for_exec_interval)
-            if not transport_server.event.wait(wait_for_exec_interval):
-                log.error('No valid exec command received!')
-                return
-    
-            self.channel = channel = transport_server.channel
-            try:
-                command = self.prepare_git_cmd(transport_server.command, transport_server.username)
-                execute_command(channel, command)
-                # The other side is expected to terminate connection, doing it ourselves
-                # would make it unhappy.
-                transport.join()
-            except ExecRequestError, exc:
-                log.error(exc.message)
-                if exc.original_exception_str:
-                    detailed = 'Original exception: ' + exc.original_exception_str
-                else:
-                    detailed = ('Traceback (most recent call last):\n' + 
-                            ''.join(traceback.format_tb(sys.exc_info()[2]))) 
-                log.error(detailed)
-                channel.send_stderr('fatal: %s\n' % exc.message)
+            while transport.active:
+                log.debug('waiting for exec request.')
+                try:
+                    channel, username, command = request_queue.get(timeout = 30.0)
+                except Queue_Empty:
+                    log.error('no valid exec request received!')
+                    break
+                
+                if channel is None:
+                    log.info('got None instead of exec request, transport has terminated.')
+                    break
+                    
+                self.channel = channel
+                try:
+                    command = self.prepare_git_cmd(command, username)
+                    execute_command(channel, command)
+                    # The other side is expected to terminate connection, doing it ourselves
+                    # would make it unhappy.
+                except ExecRequestError, exc:
+                    log.error(exc.message)
+                    if exc.original_exception_str:
+                        detailed = 'Original exception: ' + exc.original_exception_str
+                    else:
+                        detailed = ('Traceback (most recent call last):\n' + 
+                                ''.join(traceback.format_tb(sys.exc_info()[2]))) 
+                    log.error(detailed)
+                    channel.send_stderr('fatal: %s\n' % exc.message)
+                    break
         finally:
             transport.close()
-            log.info('transport terminated')
+            log.info('Request handler terminated')
 
     _git_commands = {
             'git-upload-pack' : 'git upload-pack',
@@ -292,7 +304,7 @@ class Server(ServerType):
         if auto_init_logging and not log_initialized:
             init_logging()
         self.base_directory = os.getcwd()
-        self.reconfigure(users, repositories)            
+        self.configure(users, repositories)            
         self.listen_address = listen_address
         self.listen_port = listen_port
         self.server_key = paramiko.RSAKey.from_private_key(StringIO(server_key))
@@ -301,12 +313,16 @@ class Server(ServerType):
         # ...
         ServerType.__init__(self, (listen_address, listen_port), RequestHandler)
         
-    def reconfigure(self, users, repositories):
+    def configure(self, users, repositories):
         self.users = users
         self.repositories = repositories
         self.key_to_user = key_to_user = {}
         for name, key in users.iteritems():
             key_to_user[parse_public_key(key)] = name
+        for rep_name, rep_users in repositories.iteritems():
+            for user in rep_users:
+                assert user in users, 'Unknown user %r in repository %r' % (user, rep_name)  
+        
 
 
     def serve_forever(self):

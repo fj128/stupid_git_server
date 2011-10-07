@@ -27,7 +27,7 @@ listen_port = 27015
 # Add users and their public keys. 
 users = {
         'test_user' : 'AAAAB3NzaC1yc2EAAAADAQABAAAAgQC2GVRnNff5RjWqeR8F8ZqZkslDsW6Fqqe3cwGTB2zTs088JK/xZxz6u2CztMRDN7FK2Y0jVVktMWTlIB6PhMCs+IYVjo1vdEKuSfifVaInA+lPUwHOju+P76bf9NxFKYGWDxjx8Nuad4kKXz8lYJmC2BpocUftmvBHMfKY7kf/IQ==',        
-        'nonexistent_user' : 'AAAAB3NzaC1yc2EAAAADAQABAAAAgQC2GVRnNff5RjWqeR8F8ZqZkslDsW6Fqqe3cwGTB2zTs088JK/xZxz6u2CztMRDN7FK2Y0jVVktMWTlIB6PhMCs+IYVjo1vdEKuSfifVaInA+lPUwHOju+P76bf9NxFKYGWDxjx8Nuad4kKXz8lYJmC2BpocUftmvBHMfKY7kf/ZQ==',        
+        'nonexistent_user' : 'AAAAB3NzaC1yc2EAAAADAQABAAAAgQC2GVRnNffZZZZZZZZZZZZZkslDsW6Fqqe3cwGTB2zTs088JK/xZxz6u2CztMRDN7FK2Y0jVVktMWTlIB6PhMCs+IYVjo1vdEKuSfifVaInA+lPUwHOju+P76bf9NxFKYGWDxjx8Nuad4kKXz8lYJmC2BpocUftmvBHMfKY7kf/ZQ==',        
         }
 
 # Add repositories and lists of users that are allowed full access.
@@ -35,7 +35,6 @@ users = {
 # (since they will be created as bare) must _not_ be specified here. 
 repositories = {
         'test_repo' : ['test_user'],
-        'test_repo1' : ['nonexistent_user'],
         }
 
 if __name__ == '__main__':

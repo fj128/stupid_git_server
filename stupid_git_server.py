@@ -1,4 +1,5 @@
 import os, sys
+from os import path as os_path
 import subprocess
 import SocketServer
 import re
@@ -36,6 +37,8 @@ def init_logging(path='stupid_git_server.log', level=logging.DEBUG,
     '''
     global _log_hex_dump, log, log_initialized
     _log_hex_dump = log_hex_dump
+    
+    path = os_path.abspath(path)
 
     formatter = logging.Formatter(
             '%(levelname)-.3s [%(asctime)s.%(msecs)03d] thr=%(_threadid)-2d %(name)s: %(message)s',
@@ -257,11 +260,13 @@ class RequestHandler(SocketServer.BaseRequestHandler):
         if username not in repository:
             raise ExecRequestError('User %r is not allowed to access repository %r' % (username, path))
 
-        fullpath = 'repositories/' + path
+        fullpath = os_path.join(self.server.base_directory, 'repositories', path)
         if not os.path.exists(fullpath):
             msg = 'repository %r doesn\'t exist, creating.' % path
             log.warning(msg)
             self.channel.send_stderr('warning: %s\n' % msg)
+            if 'upload-pack' in cmd:
+                self.channel.send_stderr('warning: don\'t forget that your first push must be `git push --all`.\n')
 
             with intercept_error('Failed to create repository directory, check server logs.'):
                 os.makedirs(fullpath, 0o750)
@@ -286,20 +291,23 @@ class Server(ServerType):
 
         if auto_init_logging and not log_initialized:
             init_logging()
-            
+        self.base_directory = os.getcwd()
+        self.reconfigure(users, repositories)            
         self.listen_address = listen_address
         self.listen_port = listen_port
-        self.users = users
-        self.repositories = repositories
         self.server_key = paramiko.RSAKey.from_private_key(StringIO(server_key))
-
-        self.key_to_user = key_to_user = {}
-        for name, key in users.iteritems():
-            key_to_user[parse_public_key(key)] = name
 
         # check that all users mentioned in repositories are valid.
         # ...
         ServerType.__init__(self, (listen_address, listen_port), RequestHandler)
+        
+    def reconfigure(self, users, repositories):
+        self.users = users
+        self.repositories = repositories
+        self.key_to_user = key_to_user = {}
+        for name, key in users.iteritems():
+            key_to_user[parse_public_key(key)] = name
+
 
     def serve_forever(self):
         log.info('Server.serve_forever()')

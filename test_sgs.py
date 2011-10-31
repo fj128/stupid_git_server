@@ -1,6 +1,6 @@
 import unittest
 import shutil
-import os, stat, sys
+import os, stat
 from os import path as os_path
 import logging
 from cStringIO import StringIO
@@ -17,6 +17,7 @@ class LogHandler(logging.Handler):
         logstream.write(msg + '\n')
 
 logging.getLogger().setLevel(logging.INFO)
+#logging.getLogger().setLevel(logging.DEBUG)
 logging.getLogger().addHandler(LogHandler())
 
 from sample_serve import listen_address, listen_port, server_key
@@ -38,7 +39,9 @@ def run_and_serve_command(server, command, expected_result = 0):
     child = subprocess.Popen(command,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     pump = create_data_pump('stdout->buffer', child.stdout.read, out_buffer.write, lambda:None)
-    if server: server.handle_request()
+    if server:
+        server.timeout = 5.0 
+        server.handle_request()
     res = child.wait()
     pump.join()
     if res != expected_result:
@@ -150,17 +153,42 @@ class Test_error_recovery(TestBase, unittest.TestCase):
         with self.assertRaises(AssertionError) as assertion:
             self.server.configure(users, { 'test_repo' : ['not_a_user'] })
         self.assertEqual(assertion.exception.message, "Unknown user 'not_a_user' in repository 'test_repo'")
+    def test_wrong_config2(self):
+        with self.assertRaises(AssertionError) as assertion:
+            users2 = {'test_user': users['test_user'],
+                     'test_user1': users['test_user']}
+            self.server.configure(users2, repositories)
+        self.assertEqual(assertion.exception.message, "Same keys for users 'test_user' and 'test_user1'")
     def test_nonexistent_repo(self):
         output = run_and_serve_command(self.server, 
                 'git clone ssh://localhost:27015/nonexistent_repo', 128)
         self.assertIn("fatal: Repository doesn't exist: 'nonexistent_repo'", output) 
     def test_nonexistent_user(self):
-        self.server.configure({'test_user' : self.nonexistent_pub_key },
-                self.server.repositories)
+        self.server.configure(
+                {'test_user' : self.nonexistent_pub_key },
+                repositories)
         output = run_and_serve_command(self.server, 
                 'git clone ssh://localhost:27015/test_repo', 128)
         self.assertIn('Permission denied (publickey).', map(str.strip, output)) 
+    def test_user_without_access(self):
+        self.server.configure(
+                {'test_user' : self.nonexistent_pub_key,
+                 'test_user1' : users['test_user']},
+                self.server.repositories)
+        output = run_and_serve_command(self.server, 
+                'git clone ssh://localhost:27015/test_repo', 128)
+        self.assertIn("fatal: User 'test_user1' is not allowed to access repository 'test_repo'", map(str.strip, output)) 
+    def test_invalid_path(self):
+        output = run_and_serve_command(self.server, 
+                'git clone ssh://localhost:27015/../something', 128)
+        self.assertIn('fatal: Invalid command: "git-upload-pack \'/../something\'"', output) 
+    def test_invalid_path2(self):
+        output = run_and_serve_command(self.server, 
+                'git clone ssh://localhost:27015/x/something/.. test', 128)
+        self.assertIn('fatal: Invalid command: "git-upload-pack \'/x/something/..\'"', output) 
         
 
 if __name__ == '__main__':
+#    suite = unittest.TestLoader().loadTestsFromTestCase(Test_error_recovery)
+#    unittest.runner.TextTestRunner().run(suite)
     unittest.main()

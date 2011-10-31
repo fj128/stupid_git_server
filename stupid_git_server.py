@@ -36,7 +36,7 @@ def init_logging(path='stupid_git_server.log', level=logging.DEBUG,
     specified log level, unless it's already the target due to `path` being
     None.
     '''
-    global _log_hex_dump, log, log_initialized
+    global _log_hex_dump
     _log_hex_dump = log_hex_dump
     
     path = os_path.abspath(path)
@@ -76,6 +76,8 @@ def init_logging(path='stupid_git_server.log', level=logging.DEBUG,
         logger.setLevel(min(level, stderr_level))
         return logger
     install_handlers('paramiko')
+    
+    global log, log_initialized
     log = install_handlers(namespace)
     log_initialized = True
 
@@ -165,10 +167,9 @@ class TransportServer(paramiko.ServerInterface):
     '''Allows a single `exec` ssh call, saves authorized
     user name, channel, and command'''
     def __init__(self, key_to_user, request_queue):
-        self.username = None
-        self.command = None
         self.key_to_user = key_to_user
         self.request_queue = request_queue
+        self.cached_auth_key = None # be paranoid -- prevent auth attempts with different keys.
 
     def check_channel_request(self, kind, chanid):
         if kind == 'session':
@@ -177,10 +178,14 @@ class TransportServer(paramiko.ServerInterface):
 
     def check_auth_publickey(self, username, key):
         log.info('Auth attempt with key: ' + hexlify(key.get_fingerprint()))
+        if self.cached_auth_key and self.cached_auth_key != key:
+            log.error('User tries to use a different key, rejecting.')
+            return paramiko.AUTH_FAILED
         real_username = self.key_to_user.get(key)
         if real_username:
-            log.info('Authenticated as %r' % real_username)
+            log.info('Allowing %r' % real_username)
             self.username = real_username
+            self.cached_auth_key = key
             return paramiko.AUTH_SUCCESSFUL
         return paramiko.AUTH_FAILED
 
@@ -318,7 +323,10 @@ class Server(ServerType):
         self.repositories = repositories
         self.key_to_user = key_to_user = {}
         for name, key in users.iteritems():
-            key_to_user[parse_public_key(key)] = name
+            key = parse_public_key(key)
+            assert key not in key_to_user, ("Same keys for users %r and %r" % 
+                    tuple(sorted((name, key_to_user[key]))))  
+            key_to_user[key] = name
         for rep_name, rep_users in repositories.iteritems():
             for user in rep_users:
                 assert user in users, 'Unknown user %r in repository %r' % (user, rep_name)  
